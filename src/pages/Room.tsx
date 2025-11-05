@@ -118,11 +118,18 @@ const Room = () => {
           setVideoState(newState);
           
           if (videoRef.current && !participant?.is_host) {
-            videoRef.current.currentTime = newState.playback_time;
-            if (newState.is_playing) {
-              videoRef.current.play();
-            } else {
-              videoRef.current.pause();
+            const video = videoRef.current;
+            const timeDiff = Math.abs(video.currentTime - newState.playback_time);
+            
+            // Only seek if difference is more than 0.5 seconds
+            if (timeDiff > 0.5) {
+              video.currentTime = newState.playback_time;
+            }
+            
+            if (newState.is_playing && video.paused) {
+              video.play().catch(err => console.log("Play error:", err));
+            } else if (!newState.is_playing && !video.paused) {
+              video.pause();
             }
           }
         }
