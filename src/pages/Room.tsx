@@ -1,0 +1,310 @@
+import { useEffect, useState, useRef } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { VideoPlayer } from "@/components/VideoPlayer";
+import { ChatPanel } from "@/components/ChatPanel";
+import { ParticipantsList } from "@/components/ParticipantsList";
+import { Play, Pause, Upload, Lock, Unlock, LogOut } from "lucide-react";
+
+interface Room {
+  id: string;
+  code: string;
+  name: string;
+  host_name: string;
+  video_url: string | null;
+  is_locked: boolean;
+}
+
+interface Participant {
+  id: string;
+  name: string;
+  is_host: boolean;
+}
+
+interface VideoState {
+  is_playing: boolean;
+  playback_time: number;
+}
+
+const Room = () => {
+  const { code } = useParams();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [room, setRoom] = useState<Room | null>(null);
+  const [participant, setParticipant] = useState<Participant | null>(null);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [videoState, setVideoState] = useState<VideoState>({ is_playing: false, playback_time: 0 });
+  const [uploading, setUploading] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (!code) return;
+
+    const participantId = localStorage.getItem(`participant_${code}`);
+    if (!participantId) {
+      navigate(`/join/${code}`);
+      return;
+    }
+
+    loadRoomData(participantId);
+    setupRealtimeSubscriptions(participantId);
+  }, [code]);
+
+  const loadRoomData = async (participantId: string) => {
+    const { data: roomData } = await supabase
+      .from("rooms")
+      .select("*")
+      .eq("code", code)
+      .single();
+
+    if (roomData) {
+      setRoom(roomData);
+      
+      const { data: participantData } = await supabase
+        .from("participants")
+        .select("*")
+        .eq("id", participantId)
+        .single();
+      
+      if (participantData) {
+        setParticipant(participantData);
+      }
+
+      const { data: participantsData } = await supabase
+        .from("participants")
+        .select("*")
+        .eq("room_id", roomData.id);
+      
+      if (participantsData) {
+        setParticipants(participantsData);
+      }
+
+      const { data: videoStateData } = await supabase
+        .from("video_state")
+        .select("*")
+        .eq("room_id", roomData.id)
+        .maybeSingle();
+      
+      if (videoStateData) {
+        setVideoState({
+          is_playing: videoStateData.is_playing,
+          playback_time: Number(videoStateData.playback_time),
+        });
+      }
+    }
+  };
+
+  const setupRealtimeSubscriptions = (participantId: string) => {
+    const channel = supabase.channel(`room_${code}`);
+
+    channel
+      .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `code=eq.${code}` }, (payload) => {
+        if (payload.eventType === "UPDATE") {
+          setRoom(payload.new as Room);
+        }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "participants" }, (payload) => {
+        loadRoomData(participantId);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "video_state" }, (payload) => {
+        if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
+          const newState = {
+            is_playing: payload.new.is_playing,
+            playback_time: Number(payload.new.playback_time),
+          };
+          setVideoState(newState);
+          
+          if (videoRef.current && !participant?.is_host) {
+            videoRef.current.currentTime = newState.playback_time;
+            if (newState.is_playing) {
+              videoRef.current.play();
+            } else {
+              videoRef.current.pause();
+            }
+          }
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  };
+
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !room || !participant?.is_host) return;
+
+    setUploading(true);
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${room.id}_${Date.now()}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("videos")
+      .upload(fileName, file);
+
+    if (uploadError) {
+      toast({ title: "Upload failed", description: uploadError.message, variant: "destructive" });
+      setUploading(false);
+      return;
+    }
+
+    const { data } = supabase.storage.from("videos").getPublicUrl(fileName);
+
+    await supabase
+      .from("rooms")
+      .update({ video_url: data.publicUrl })
+      .eq("id", room.id);
+
+    setUploading(false);
+    toast({ title: "Video uploaded successfully!" });
+  };
+
+  const updateVideoState = async (updates: Partial<VideoState>) => {
+    if (!room || !participant?.is_host) return;
+
+    await supabase
+      .from("video_state")
+      .upsert({
+        room_id: room.id,
+        ...updates,
+        updated_at: new Date().toISOString(),
+      });
+  };
+
+  const handlePlayPause = () => {
+    if (!participant?.is_host || !videoRef.current) return;
+    
+    const newIsPlaying = !videoState.is_playing;
+    updateVideoState({
+      is_playing: newIsPlaying,
+      playback_time: videoRef.current.currentTime,
+    });
+  };
+
+  const handleSeek = () => {
+    if (!participant?.is_host || !videoRef.current) return;
+    
+    updateVideoState({
+      playback_time: videoRef.current.currentTime,
+    });
+  };
+
+  const toggleLock = async () => {
+    if (!room || !participant?.is_host) return;
+
+    await supabase
+      .from("rooms")
+      .update({ is_locked: !room.is_locked })
+      .eq("id", room.id);
+  };
+
+  const handleLeave = async () => {
+    if (!participant) return;
+
+    await supabase
+      .from("participants")
+      .delete()
+      .eq("id", participant.id);
+
+    localStorage.removeItem(`participant_${code}`);
+    navigate("/");
+  };
+
+  if (!room || !participant) {
+    return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  }
+
+  return (
+    <div className="min-h-screen bg-background p-4 animate-fade-in">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold bg-gradient-hero bg-clip-text text-transparent">
+              {room.name}
+            </h1>
+            <p className="text-muted-foreground">Room Code: {room.code}</p>
+          </div>
+          <Button onClick={handleLeave} variant="destructive">
+            <LogOut className="w-4 h-4 mr-2" />
+            Leave
+          </Button>
+        </div>
+
+        <div className="grid lg:grid-cols-[1fr_350px] gap-4">
+          <div className="space-y-4">
+            {room.video_url ? (
+              <VideoPlayer
+                ref={videoRef}
+                url={room.video_url}
+                isHost={participant.is_host}
+                onSeek={handleSeek}
+              />
+            ) : (
+              <div className="aspect-video bg-card rounded-lg border-2 border-dashed border-border flex items-center justify-center">
+                <p className="text-muted-foreground">No video uploaded yet</p>
+              </div>
+            )}
+
+            {participant.is_host && (
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={handlePlayPause} disabled={!room.video_url}>
+                  {videoState.is_playing ? (
+                    <>
+                      <Pause className="w-4 h-4 mr-2" />
+                      Pause
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      Play
+                    </>
+                  )}
+                </Button>
+                
+                <label>
+                  <Button asChild disabled={uploading}>
+                    <span>
+                      <Upload className="w-4 h-4 mr-2" />
+                      {uploading ? "Uploading..." : "Upload Video"}
+                    </span>
+                  </Button>
+                  <input
+                    type="file"
+                    accept="video/*"
+                    className="hidden"
+                    onChange={handleVideoUpload}
+                  />
+                </label>
+
+                <Button onClick={toggleLock} variant="secondary">
+                  {room.is_locked ? (
+                    <>
+                      <Unlock className="w-4 h-4 mr-2" />
+                      Unlock Room
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-4 h-4 mr-2" />
+                      Lock Room
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4">
+            <ParticipantsList participants={participants} />
+            <ChatPanel roomId={room.id} participantId={participant.id} participantName={participant.name} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Room;
