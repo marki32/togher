@@ -105,6 +105,10 @@ const Room = () => {
       .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `code=eq.${code}` }, (payload) => {
         if (payload.eventType === "UPDATE") {
           setRoom(payload.new as Room);
+        } else if (payload.eventType === "DELETE") {
+          toast({ title: "Room closed", description: "The host has closed the room" });
+          localStorage.removeItem(`participant_${code}`);
+          navigate("/");
         }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "participants" }, (payload) => {
@@ -247,12 +251,23 @@ const Room = () => {
   };
 
   const handleLeave = async () => {
-    if (!participant) return;
+    if (!participant || !room) return;
 
-    await supabase
-      .from("participants")
-      .delete()
-      .eq("id", participant.id);
+    if (participant.is_host) {
+      // Host leaving - close the entire room
+      await supabase
+        .from("rooms")
+        .delete()
+        .eq("id", room.id);
+      
+      toast({ title: "Room closed", description: "You have closed the room" });
+    } else {
+      // Regular participant leaving
+      await supabase
+        .from("participants")
+        .delete()
+        .eq("id", participant.id);
+    }
 
     localStorage.removeItem(`participant_${code}`);
     navigate("/");
