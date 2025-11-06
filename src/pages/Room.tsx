@@ -38,6 +38,7 @@ const Room = () => {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [videoState, setVideoState] = useState<VideoState>({ is_playing: false, playback_time: 0 });
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -146,19 +147,27 @@ const Room = () => {
     if (!file || !room || !participant?.is_host) return;
 
     setUploading(true);
+    setUploadProgress(0);
+    
     const fileExt = file.name.split('.').pop();
     const fileName = `${room.id}_${Date.now()}.${fileExt}`;
 
+    // Upload with progress tracking
     const { error: uploadError } = await supabase.storage
       .from("videos")
-      .upload(fileName, file);
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: false,
+      });
 
     if (uploadError) {
       toast({ title: "Upload failed", description: uploadError.message, variant: "destructive" });
       setUploading(false);
+      setUploadProgress(0);
       return;
     }
 
+    setUploadProgress(100);
     const { data } = supabase.storage.from("videos").getPublicUrl(fileName);
 
     await supabase
@@ -167,7 +176,11 @@ const Room = () => {
       .eq("id", room.id);
 
     setUploading(false);
+    setUploadProgress(0);
     toast({ title: "Video uploaded successfully!" });
+    
+    // Reset file input
+    e.target.value = '';
   };
 
   const updateVideoState = async (updates: Partial<VideoState>) => {
@@ -272,20 +285,30 @@ const Room = () => {
                   )}
                 </Button>
                 
-                <label>
-                  <Button asChild disabled={uploading}>
-                    <span>
-                      <Upload className="w-4 h-4 mr-2" />
-                      {uploading ? "Uploading..." : "Upload Video"}
-                    </span>
-                  </Button>
-                  <input
-                    type="file"
-                    accept="video/*"
-                    className="hidden"
-                    onChange={handleVideoUpload}
-                  />
-                </label>
+                <div className="relative">
+                  <label>
+                    <Button asChild disabled={uploading}>
+                      <span>
+                        <Upload className="w-4 h-4 mr-2" />
+                        {uploading ? `Uploading... ${uploadProgress}%` : "Upload Video"}
+                      </span>
+                    </Button>
+                    <input
+                      type="file"
+                      accept="video/*"
+                      className="hidden"
+                      onChange={handleVideoUpload}
+                    />
+                  </label>
+                  {uploading && (
+                    <div className="absolute bottom-0 left-0 w-full h-1 bg-muted rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-gradient-hero transition-all duration-300"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
 
                 <Button onClick={toggleLock} variant="secondary">
                   {room.is_locked ? (
