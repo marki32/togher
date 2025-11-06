@@ -147,40 +147,64 @@ const Room = () => {
     if (!file || !room || !participant?.is_host) return;
 
     setUploading(true);
-    setUploadProgress(0);
+    setUploadProgress(10);
     
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${room.id}_${Date.now()}.${fileExt}`;
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${room.id}_${Date.now()}.${fileExt}`;
 
-    // Upload with progress tracking
-    const { error: uploadError } = await supabase.storage
-      .from("videos")
-      .upload(fileName, file, {
-        cacheControl: '3600',
-        upsert: false,
+      setUploadProgress(20);
+
+      // Create a blob and upload in chunks using XMLHttpRequest for better speed
+      const formData = new FormData();
+      formData.append('file', file);
+
+      // Direct upload with progress
+      const uploadPromise = new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percentComplete = Math.round((e.loaded / e.total) * 80) + 20;
+            setUploadProgress(percentComplete);
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 200) {
+            resolve(xhr.response);
+          } else {
+            reject(new Error('Upload failed'));
+          }
+        });
+
+        xhr.addEventListener('error', () => reject(new Error('Upload failed')));
+        
+        const token = localStorage.getItem('sb-hxrxlvhsjvtuwhdbbvwr-auth-token');
+        xhr.open('POST', `https://hxrxlvhsjvtuwhdbbvwr.supabase.co/storage/v1/object/videos/${fileName}`);
+        xhr.setRequestHeader('Authorization', `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`);
+        xhr.setRequestHeader('apikey', import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY);
+        xhr.send(file);
       });
 
-    if (uploadError) {
-      toast({ title: "Upload failed", description: uploadError.message, variant: "destructive" });
+      await uploadPromise;
+
+      setUploadProgress(100);
+      const { data } = supabase.storage.from("videos").getPublicUrl(fileName);
+
+      await supabase
+        .from("rooms")
+        .update({ video_url: data.publicUrl })
+        .eq("id", room.id);
+
+      toast({ title: "Video uploaded successfully!" });
+    } catch (error) {
+      toast({ title: "Upload failed", description: "Please try again", variant: "destructive" });
+    } finally {
       setUploading(false);
       setUploadProgress(0);
-      return;
+      e.target.value = '';
     }
-
-    setUploadProgress(100);
-    const { data } = supabase.storage.from("videos").getPublicUrl(fileName);
-
-    await supabase
-      .from("rooms")
-      .update({ video_url: data.publicUrl })
-      .eq("id", room.id);
-
-    setUploading(false);
-    setUploadProgress(0);
-    toast({ title: "Video uploaded successfully!" });
-    
-    // Reset file input
-    e.target.value = '';
   };
 
   const updateVideoState = async (updates: Partial<VideoState>) => {
