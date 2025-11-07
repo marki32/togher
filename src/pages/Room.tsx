@@ -7,7 +7,6 @@ import { useToast } from "@/hooks/use-toast";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ParticipantsList } from "@/components/ParticipantsList";
-import { ReactionOverlay } from "@/components/ReactionOverlay";
 import { Play, Pause, Upload, Lock, Unlock, LogOut } from "lucide-react";
 
 interface Room {
@@ -328,18 +327,6 @@ const Room = () => {
     toast({ title: "Participant removed" });
   };
 
-  const handleReaction = async (emoji: string, x: number, y: number) => {
-    if (!room || !participant) return;
-
-    await supabase.from("reactions").insert({
-      room_id: room.id,
-      participant_id: participant.id,
-      emoji,
-      x_position: x,
-      y_position: y,
-    });
-  };
-
   if (!room || !participant) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
@@ -364,19 +351,12 @@ const Room = () => {
           <div className="space-y-4">
             <div className="relative">
               {room.video_url ? (
-                <>
-                  <VideoPlayer
-                    ref={videoRef}
-                    url={room.video_url}
-                    isHost={participant.is_host}
-                    onSeek={handleSeek}
-                  />
-                  <ReactionOverlay
-                    roomId={room.id}
-                    participantId={participant.id}
-                    onReactionClick={handleReaction}
-                  />
-                </>
+                <VideoPlayer
+                  ref={videoRef}
+                  url={room.video_url}
+                  isHost={participant.is_host}
+                  onSeek={handleSeek}
+                />
               ) : (
                 <div className="aspect-video bg-card rounded-lg border-2 border-dashed border-border flex items-center justify-center">
                   <p className="text-muted-foreground">No video uploaded yet</p>

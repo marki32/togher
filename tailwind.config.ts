@@ -80,29 +80,10 @@ export default {
             height: "0",
           },
         },
-        "float-up": {
-          "0%": {
-            opacity: "0",
-            transform: "translateY(0) scale(0.5)",
-          },
-          "10%": {
-            opacity: "1",
-            transform: "translateY(-10px) scale(1)",
-          },
-          "90%": {
-            opacity: "1",
-            transform: "translateY(-150px) scale(1.2)",
-          },
-          "100%": {
-            opacity: "0",
-            transform: "translateY(-200px) scale(0.8)",
-          },
-        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
-        "float-up": "float-up 3s ease-out forwards",
       },
     },
   },
