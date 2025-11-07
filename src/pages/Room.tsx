@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ParticipantsList } from "@/components/ParticipantsList";
+import { ReactionOverlay } from "@/components/ReactionOverlay";
 import { Play, Pause, Upload, Lock, Unlock, LogOut } from "lucide-react";
 
 interface Room {
@@ -22,6 +23,7 @@ interface Participant {
   id: string;
   name: string;
   is_host: boolean;
+  online?: boolean;
 }
 
 interface VideoState {
@@ -39,6 +41,7 @@ const Room = () => {
   const [videoState, setVideoState] = useState<VideoState>({ is_playing: false, playback_time: 0 });
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [onlineParticipants, setOnlineParticipants] = useState<Set<string>>(new Set());
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -52,6 +55,7 @@ const Room = () => {
 
     loadRoomData(participantId);
     setupRealtimeSubscriptions(participantId);
+    setupPresence(participantId);
   }, [code]);
 
   const loadRoomData = async (participantId: string) => {
@@ -112,7 +116,13 @@ const Room = () => {
         }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "participants" }, (payload) => {
-        loadRoomData(participantId);
+        if (payload.eventType === "DELETE" && payload.old.id === participantId) {
+          toast({ title: "Kicked from room", description: "You have been removed by the host", variant: "destructive" });
+          localStorage.removeItem(`participant_${code}`);
+          navigate("/");
+        } else {
+          loadRoomData(participantId);
+        }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "video_state" }, (payload) => {
         if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
@@ -143,6 +153,40 @@ const Room = () => {
 
     return () => {
       supabase.removeChannel(channel);
+    };
+  };
+
+  const setupPresence = (participantId: string) => {
+    const presenceChannel = supabase.channel(`presence_${code}`);
+
+    presenceChannel
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceChannel.presenceState();
+        const online = new Set<string>();
+        Object.values(state).forEach((presences: any) => {
+          presences.forEach((presence: any) => {
+            online.add(presence.participant_id);
+          });
+        });
+        setOnlineParticipants(online);
+      })
+      .on("presence", { event: "join" }, ({ newPresences }) => {
+        console.log("Participant joined:", newPresences);
+      })
+      .on("presence", { event: "leave" }, ({ leftPresences }) => {
+        console.log("Participant left:", leftPresences);
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceChannel.track({
+            participant_id: participantId,
+            online_at: new Date().toISOString(),
+          });
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(presenceChannel);
     };
   };
 
@@ -273,6 +317,29 @@ const Room = () => {
     navigate("/");
   };
 
+  const handleKickParticipant = async (participantId: string) => {
+    if (!participant?.is_host) return;
+
+    await supabase
+      .from("participants")
+      .delete()
+      .eq("id", participantId);
+
+    toast({ title: "Participant removed" });
+  };
+
+  const handleReaction = async (emoji: string, x: number, y: number) => {
+    if (!room || !participant) return;
+
+    await supabase.from("reactions").insert({
+      room_id: room.id,
+      participant_id: participant.id,
+      emoji,
+      x_position: x,
+      y_position: y,
+    });
+  };
+
   if (!room || !participant) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
@@ -295,18 +362,27 @@ const Room = () => {
 
         <div className="grid lg:grid-cols-[1fr_350px] gap-4">
           <div className="space-y-4">
-            {room.video_url ? (
-              <VideoPlayer
-                ref={videoRef}
-                url={room.video_url}
-                isHost={participant.is_host}
-                onSeek={handleSeek}
-              />
-            ) : (
-              <div className="aspect-video bg-card rounded-lg border-2 border-dashed border-border flex items-center justify-center">
-                <p className="text-muted-foreground">No video uploaded yet</p>
-              </div>
-            )}
+            <div className="relative">
+              {room.video_url ? (
+                <>
+                  <VideoPlayer
+                    ref={videoRef}
+                    url={room.video_url}
+                    isHost={participant.is_host}
+                    onSeek={handleSeek}
+                  />
+                  <ReactionOverlay
+                    roomId={room.id}
+                    participantId={participant.id}
+                    onReactionClick={handleReaction}
+                  />
+                </>
+              ) : (
+                <div className="aspect-video bg-card rounded-lg border-2 border-dashed border-border flex items-center justify-center">
+                  <p className="text-muted-foreground">No video uploaded yet</p>
+                </div>
+              )}
+            </div>
 
             {participant.is_host && (
               <div className="flex flex-wrap gap-2">
@@ -367,7 +443,15 @@ const Room = () => {
           </div>
 
           <div className="space-y-4">
-            <ParticipantsList participants={participants} />
+            <ParticipantsList 
+              participants={participants.map(p => ({
+                ...p,
+                online: onlineParticipants.has(p.id)
+              }))}
+              currentParticipantId={participant.id}
+              isHost={participant.is_host}
+              onKickParticipant={handleKickParticipant}
+            />
             <ChatPanel roomId={room.id} participantId={participant.id} participantName={participant.name} />
           </div>
         </div>

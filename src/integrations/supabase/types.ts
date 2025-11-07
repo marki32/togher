@@ -85,6 +85,51 @@ export type Database = {
           },
         ]
       }
+      reactions: {
+        Row: {
+          created_at: string
+          emoji: string
+          id: string
+          participant_id: string
+          room_id: string
+          x_position: number
+          y_position: number
+        }
+        Insert: {
+          created_at?: string
+          emoji: string
+          id?: string
+          participant_id: string
+          room_id: string
+          x_position: number
+          y_position: number
+        }
+        Update: {
+          created_at?: string
+          emoji?: string
+          id?: string
+          participant_id?: string
+          room_id?: string
+          x_position?: number
+          y_position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reactions_participant_id_fkey"
+            columns: ["participant_id"]
+            isOneToOne: false
+            referencedRelation: "participants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reactions_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rooms: {
         Row: {
           code: string
