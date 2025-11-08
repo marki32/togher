@@ -200,48 +200,56 @@ const Room = () => {
       const fileExt = file.name.split('.').pop();
       const fileName = `${room.id}_${Date.now()}.${fileExt}`;
 
-      // Simulate progress for better UX
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          if (prev >= 85) {
-            clearInterval(progressInterval);
-            return prev;
+      // Use direct XHR to get true upload progress (supabase-js doesn't expose progress events)
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      const uploadUrl = `${SUPABASE_URL}/storage/v1/object/videos/${encodeURIComponent(fileName)}`;
+
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', uploadUrl, true);
+        xhr.setRequestHeader('Authorization', `Bearer ${SUPABASE_PUBLISHABLE_KEY}`);
+        xhr.setRequestHeader('apikey', SUPABASE_PUBLISHABLE_KEY);
+        xhr.setRequestHeader('x-upsert', 'true');
+        xhr.setRequestHeader('cache-control', '3600');
+        // Let the browser set Content-Type boundary for FormData if used; here we send the blob directly
+        // Provide accurate progress based on bytes sent
+        xhr.upload.onprogress = (evt) => {
+          if (evt.lengthComputable) {
+            const percent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+            setUploadProgress(percent);
           }
-          return prev + 5;
-        });
-      }, 200);
+        };
+        xhr.onerror = () => reject(new Error('Upload failed'));
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            setUploadProgress(100);
+            resolve();
+          } else {
+            reject(new Error(`Upload error: ${xhr.status}`));
+          }
+        };
+        xhr.send(file);
+      });
 
-      const { error: uploadError } = await supabase.storage
-        .from("videos")
-        .upload(fileName, file, {
-          cacheControl: '3600',
-          upsert: true,
-        });
-
-      clearInterval(progressInterval);
-
-      if (uploadError) throw uploadError;
-
-      setUploadProgress(90);
-      const { data } = supabase.storage.from("videos").getPublicUrl(fileName);
+      const { data } = supabase.storage.from('videos').getPublicUrl(fileName);
 
       await supabase
-        .from("rooms")
+        .from('rooms')
         .update({ video_url: data.publicUrl })
-        .eq("id", room.id);
+        .eq('id', room.id);
 
-      setUploadProgress(100);
-      
+      // Small delay so users can see 100%
       setTimeout(() => {
         setUploading(false);
         setUploadProgress(0);
       }, 500);
-      
-      toast({ title: "Video uploaded successfully!" });
+
+      toast({ title: 'Video uploaded successfully!' });
     } catch (error) {
       setUploading(false);
       setUploadProgress(0);
-      toast({ title: "Upload failed", description: "Please try again", variant: "destructive" });
+      toast({ title: 'Upload failed', description: 'Please try again', variant: 'destructive' });
     } finally {
       e.target.value = '';
     }
