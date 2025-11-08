@@ -194,21 +194,31 @@ const Room = () => {
     if (!file || !room || !participant?.is_host) return;
 
     setUploading(true);
-    setUploadProgress(10);
+    setUploadProgress(0);
     
     try {
       const fileExt = file.name.split('.').pop();
       const fileName = `${room.id}_${Date.now()}.${fileExt}`;
 
-      setUploadProgress(30);
+      // Simulate progress for better UX
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          if (prev >= 85) {
+            clearInterval(progressInterval);
+            return prev;
+          }
+          return prev + 5;
+        });
+      }, 200);
 
-      // Use Supabase's optimized upload with upsert for faster speeds
       const { error: uploadError } = await supabase.storage
         .from("videos")
         .upload(fileName, file, {
           cacheControl: '3600',
           upsert: true,
         });
+
+      clearInterval(progressInterval);
 
       if (uploadError) throw uploadError;
 
@@ -221,12 +231,18 @@ const Room = () => {
         .eq("id", room.id);
 
       setUploadProgress(100);
+      
+      setTimeout(() => {
+        setUploading(false);
+        setUploadProgress(0);
+      }, 500);
+      
       toast({ title: "Video uploaded successfully!" });
     } catch (error) {
-      toast({ title: "Upload failed", description: "Please try again", variant: "destructive" });
-    } finally {
       setUploading(false);
       setUploadProgress(0);
+      toast({ title: "Upload failed", description: "Please try again", variant: "destructive" });
+    } finally {
       e.target.value = '';
     }
   };
