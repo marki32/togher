@@ -40,6 +40,9 @@ const Room = () => {
   const [videoState, setVideoState] = useState<VideoState>({ is_playing: false, playback_time: 0 });
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [compressing, setCompressing] = useState(false);
+  const [compressionProgress, setCompressionProgress] = useState(0);
+  const [enableCompression, setEnableCompression] = useState(true);
   const [onlineParticipants, setOnlineParticipants] = useState<Set<string>>(new Set());
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -189,18 +192,83 @@ const Room = () => {
     };
   };
 
+  const compressVideo = async (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const videoElement = document.createElement('video');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      videoElement.preload = 'metadata';
+      videoElement.src = URL.createObjectURL(file);
+      
+      videoElement.onloadedmetadata = () => {
+        // Set canvas to video dimensions (could be scaled down further)
+        canvas.width = videoElement.videoWidth;
+        canvas.height = videoElement.videoHeight;
+        
+        const stream = canvas.captureStream();
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'video/webm;codecs=vp8',
+          videoBitsPerSecond: 1000000, // 1 Mbps - adjust for quality vs size
+        });
+        
+        const chunks: Blob[] = [];
+        mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          setCompressing(false);
+          setCompressionProgress(0);
+          URL.revokeObjectURL(videoElement.src);
+          resolve(blob);
+        };
+        mediaRecorder.onerror = reject;
+        
+        mediaRecorder.start();
+        videoElement.play();
+        
+        const drawFrame = () => {
+          if (videoElement.paused || videoElement.ended) {
+            mediaRecorder.stop();
+            return;
+          }
+          ctx?.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+          const progress = Math.min(99, Math.round((videoElement.currentTime / videoElement.duration) * 100));
+          setCompressionProgress(progress);
+          requestAnimationFrame(drawFrame);
+        };
+        
+        drawFrame();
+      };
+      
+      videoElement.onerror = reject;
+    });
+  };
+
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !room || !participant?.is_host) return;
 
-    setUploading(true);
-    setUploadProgress(0);
-    
     try {
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${room.id}_${Date.now()}.${fileExt}`;
+      let fileToUpload: Blob = file;
+      let fileName = `${room.id}_${Date.now()}`;
+      
+      // Compress if enabled
+      if (enableCompression) {
+        setCompressing(true);
+        setCompressionProgress(0);
+        toast({ title: 'Compressing video...', description: 'This may take a moment' });
+        fileToUpload = await compressVideo(file);
+        fileName += '.webm';
+        toast({ title: 'Compression complete!', description: `Reduced from ${(file.size / 1024 / 1024).toFixed(1)}MB to ${(fileToUpload.size / 1024 / 1024).toFixed(1)}MB` });
+      } else {
+        const fileExt = file.name.split('.').pop();
+        fileName += `.${fileExt}`;
+      }
 
-      // Use direct XHR to get true upload progress (supabase-js doesn't expose progress events)
+      setUploading(true);
+      setUploadProgress(0);
+
+      // Use direct XHR to get true upload progress
       const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
       const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       const uploadUrl = `${SUPABASE_URL}/storage/v1/object/videos/${encodeURIComponent(fileName)}`;
@@ -212,8 +280,7 @@ const Room = () => {
         xhr.setRequestHeader('apikey', SUPABASE_PUBLISHABLE_KEY);
         xhr.setRequestHeader('x-upsert', 'true');
         xhr.setRequestHeader('cache-control', '3600');
-        // Let the browser set Content-Type boundary for FormData if used; here we send the blob directly
-        // Provide accurate progress based on bytes sent
+        
         xhr.upload.onprogress = (evt) => {
           if (evt.lengthComputable) {
             const percent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
@@ -229,7 +296,7 @@ const Room = () => {
             reject(new Error(`Upload error: ${xhr.status}`));
           }
         };
-        xhr.send(file);
+        xhr.send(fileToUpload);
       });
 
       const { data } = supabase.storage.from('videos').getPublicUrl(fileName);
@@ -239,7 +306,6 @@ const Room = () => {
         .update({ video_url: data.publicUrl })
         .eq('id', room.id);
 
-      // Small delay so users can see 100%
       setTimeout(() => {
         setUploading(false);
         setUploadProgress(0);
@@ -247,6 +313,8 @@ const Room = () => {
 
       toast({ title: 'Video uploaded successfully!' });
     } catch (error) {
+      setCompressing(false);
+      setCompressionProgress(0);
       setUploading(false);
       setUploadProgress(0);
       toast({ title: 'Upload failed', description: 'Please try again', variant: 'destructive' });
@@ -366,59 +434,71 @@ const Room = () => {
             </div>
 
             {participant.is_host && (
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={handlePlayPause} disabled={!room.video_url}>
-                  {videoState.is_playing ? (
-                    <>
-                      <Pause className="w-4 h-4 mr-2" />
-                      Pause
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4 mr-2" />
-                      Play
-                    </>
-                  )}
-                </Button>
-                
-                <div className="relative">
-                  <label>
-                    <Button asChild disabled={uploading}>
-                      <span>
-                        <Upload className="w-4 h-4 mr-2" />
-                        {uploading ? `Uploading... ${uploadProgress}%` : "Upload Video"}
-                      </span>
-                    </Button>
-                    <input
-                      type="file"
-                      accept="video/*"
-                      className="hidden"
-                      onChange={handleVideoUpload}
-                    />
-                  </label>
-                  {uploading && (
-                    <div className="absolute bottom-0 left-0 w-full h-1 bg-muted rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-gradient-hero transition-all duration-300"
-                        style={{ width: `${uploadProgress}%` }}
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={handlePlayPause} disabled={!room.video_url}>
+                    {videoState.is_playing ? (
+                      <>
+                        <Pause className="w-4 h-4 mr-2" />
+                        Pause
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4 mr-2" />
+                        Play
+                      </>
+                    )}
+                  </Button>
+                  
+                  <div className="relative">
+                    <label>
+                      <Button asChild disabled={uploading || compressing}>
+                        <span>
+                          <Upload className="w-4 h-4 mr-2" />
+                          {compressing ? `Compressing... ${compressionProgress}%` : uploading ? `Uploading... ${uploadProgress}%` : "Upload Video"}
+                        </span>
+                      </Button>
+                      <input
+                        type="file"
+                        accept="video/*"
+                        className="hidden"
+                        onChange={handleVideoUpload}
                       />
-                    </div>
-                  )}
-                </div>
+                    </label>
+                    {(uploading || compressing) && (
+                      <div className="absolute bottom-0 left-0 w-full h-1 bg-muted rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-gradient-hero transition-all duration-300"
+                          style={{ width: `${compressing ? compressionProgress : uploadProgress}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
 
-                <Button onClick={toggleLock} variant="secondary">
-                  {room.is_locked ? (
-                    <>
-                      <Unlock className="w-4 h-4 mr-2" />
-                      Unlock Room
-                    </>
-                  ) : (
-                    <>
-                      <Lock className="w-4 h-4 mr-2" />
-                      Lock Room
-                    </>
-                  )}
-                </Button>
+                  <Button onClick={toggleLock} variant="secondary">
+                    {room.is_locked ? (
+                      <>
+                        <Unlock className="w-4 h-4 mr-2" />
+                        Unlock Room
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-4 h-4 mr-2" />
+                        Lock Room
+                      </>
+                    )}
+                  </Button>
+                </div>
+                
+                <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enableCompression}
+                    onChange={(e) => setEnableCompression(e.target.checked)}
+                    className="w-4 h-4 rounded border-border"
+                  />
+                  Compress video before upload (reduces file size & speeds up upload)
+                </label>
               </div>
             )}
           </div>
