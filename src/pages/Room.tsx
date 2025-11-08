@@ -200,43 +200,19 @@ const Room = () => {
       const fileExt = file.name.split('.').pop();
       const fileName = `${room.id}_${Date.now()}.${fileExt}`;
 
-      setUploadProgress(20);
+      setUploadProgress(30);
 
-      // Create a blob and upload in chunks using XMLHttpRequest for better speed
-      const formData = new FormData();
-      formData.append('file', file);
-
-      // Direct upload with progress
-      const uploadPromise = new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        
-        xhr.upload.addEventListener('progress', (e) => {
-          if (e.lengthComputable) {
-            const percentComplete = Math.round((e.loaded / e.total) * 80) + 20;
-            setUploadProgress(percentComplete);
-          }
+      // Use Supabase's optimized upload with upsert for faster speeds
+      const { error: uploadError } = await supabase.storage
+        .from("videos")
+        .upload(fileName, file, {
+          cacheControl: '3600',
+          upsert: true,
         });
 
-        xhr.addEventListener('load', () => {
-          if (xhr.status === 200) {
-            resolve(xhr.response);
-          } else {
-            reject(new Error('Upload failed'));
-          }
-        });
+      if (uploadError) throw uploadError;
 
-        xhr.addEventListener('error', () => reject(new Error('Upload failed')));
-        
-        const token = localStorage.getItem('sb-hxrxlvhsjvtuwhdbbvwr-auth-token');
-        xhr.open('POST', `https://hxrxlvhsjvtuwhdbbvwr.supabase.co/storage/v1/object/videos/${fileName}`);
-        xhr.setRequestHeader('Authorization', `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`);
-        xhr.setRequestHeader('apikey', import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY);
-        xhr.send(file);
-      });
-
-      await uploadPromise;
-
-      setUploadProgress(100);
+      setUploadProgress(90);
       const { data } = supabase.storage.from("videos").getPublicUrl(fileName);
 
       await supabase
@@ -244,6 +220,7 @@ const Room = () => {
         .update({ video_url: data.publicUrl })
         .eq("id", room.id);
 
+      setUploadProgress(100);
       toast({ title: "Video uploaded successfully!" });
     } catch (error) {
       toast({ title: "Upload failed", description: "Please try again", variant: "destructive" });
