@@ -60,6 +60,7 @@ export type Database = {
           joined_at: string | null
           name: string
           room_id: string
+          user_id: string | null
         }
         Insert: {
           id?: string
@@ -67,6 +68,7 @@ export type Database = {
           joined_at?: string | null
           name: string
           room_id: string
+          user_id?: string | null
         }
         Update: {
           id?: string
@@ -74,6 +76,7 @@ export type Database = {
           joined_at?: string | null
           name?: string
           room_id?: string
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -83,7 +86,38 @@ export type Database = {
             referencedRelation: "rooms"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "participants_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
         ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name: string
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       reactions: {
         Row: {
@@ -130,6 +164,54 @@ export type Database = {
           },
         ]
       }
+      room_history: {
+        Row: {
+          id: string
+          last_watched_at: string
+          room_code: string
+          room_id: string
+          room_name: string
+          user_id: string
+          video_url: string | null
+          watch_duration_seconds: number | null
+        }
+        Insert: {
+          id?: string
+          last_watched_at?: string
+          room_code: string
+          room_id: string
+          room_name: string
+          user_id: string
+          video_url?: string | null
+          watch_duration_seconds?: number | null
+        }
+        Update: {
+          id?: string
+          last_watched_at?: string
+          room_code?: string
+          room_id?: string
+          room_name?: string
+          user_id?: string
+          video_url?: string | null
+          watch_duration_seconds?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_history_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "room_history_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rooms: {
         Row: {
           code: string
@@ -137,8 +219,11 @@ export type Database = {
           host_name: string
           id: string
           is_locked: boolean | null
+          last_activity_at: string | null
           name: string
+          total_watch_time_seconds: number | null
           video_url: string | null
+          view_count: number | null
         }
         Insert: {
           code: string
@@ -146,8 +231,11 @@ export type Database = {
           host_name: string
           id?: string
           is_locked?: boolean | null
+          last_activity_at?: string | null
           name: string
+          total_watch_time_seconds?: number | null
           video_url?: string | null
+          view_count?: number | null
         }
         Update: {
           code?: string
@@ -155,8 +243,11 @@ export type Database = {
           host_name?: string
           id?: string
           is_locked?: boolean | null
+          last_activity_at?: string | null
           name?: string
+          total_watch_time_seconds?: number | null
           video_url?: string | null
+          view_count?: number | null
         }
         Relationships: []
       }
