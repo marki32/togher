@@ -1,14 +1,50 @@
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Film, Users, Play } from "lucide-react";
+import { Film, Users, Play, History, User, LogOut } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 
 const Index = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+  };
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="max-w-6xl mx-auto px-4 py-16">
+      <div className="max-w-6xl mx-auto px-4 py-8">
+        {/* Header with Auth buttons */}
+        <div className="flex justify-end gap-2 mb-8">
+          {user ? (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => navigate("/history")}
+              >
+                <History className="w-4 h-4 mr-2" />
+                History
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleSignOut}
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                Sign Out
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={() => navigate("/auth")}
+            >
+              <User className="w-4 h-4 mr-2" />
+              Sign In
+            </Button>
+          )}
+        </div>
         <div className="text-center mb-16 animate-fade-in">
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-gradient-hero mb-6 shadow-glow">
             <Film className="w-10 h-10 text-primary-foreground" />

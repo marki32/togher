@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Users } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 const JoinRoom = () => {
   const { code: urlCode } = useParams();
@@ -14,6 +15,7 @@ const JoinRoom = () => {
   const [joining, setJoining] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const joinRoom = async () => {
     if (!code.trim() || !name.trim()) {
@@ -47,6 +49,7 @@ const JoinRoom = () => {
         room_id: roomData.id,
         name: name,
         is_host: false,
+        user_id: user?.id || null,
       })
       .select()
       .single();

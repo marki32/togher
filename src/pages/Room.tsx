@@ -8,6 +8,7 @@ import { VideoPlayer } from "@/components/VideoPlayer";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ParticipantsList } from "@/components/ParticipantsList";
 import { Play, Pause, Upload, Lock, Unlock, LogOut } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Room {
   id: string;
@@ -16,6 +17,9 @@ interface Room {
   host_name: string;
   video_url: string | null;
   is_locked: boolean;
+  view_count?: number;
+  total_watch_time_seconds?: number;
+  last_activity_at?: string;
 }
 
 interface Participant {
@@ -34,6 +38,7 @@ const Room = () => {
   const { code } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [room, setRoom] = useState<Room | null>(null);
   const [participant, setParticipant] = useState<Participant | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -49,6 +54,8 @@ const Room = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const uploadStartTime = useRef<number>(0);
   const uploadedBytes = useRef<number>(0);
+  const watchStartTime = useRef<number>(Date.now());
+  const historyUpdateInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!code) return;
@@ -62,7 +69,25 @@ const Room = () => {
     loadRoomData(participantId);
     setupRealtimeSubscriptions(participantId);
     setupPresence(participantId);
-  }, [code]);
+
+    // Start tracking watch time for authenticated users
+    if (user) {
+      watchStartTime.current = Date.now();
+      historyUpdateInterval.current = setInterval(() => {
+        updateWatchHistory();
+      }, 30000); // Update every 30 seconds
+    }
+
+    return () => {
+      if (historyUpdateInterval.current) {
+        clearInterval(historyUpdateInterval.current);
+      }
+      // Final update on unmount
+      if (user) {
+        updateWatchHistory();
+      }
+    };
+  }, [code, user]);
 
   const loadRoomData = async (participantId: string) => {
     const { data: roomData } = await supabase
@@ -194,6 +219,41 @@ const Room = () => {
     return () => {
       supabase.removeChannel(presenceChannel);
     };
+  };
+
+  const updateWatchHistory = async () => {
+    if (!user || !room) return;
+
+    const watchDuration = Math.floor((Date.now() - watchStartTime.current) / 1000);
+
+    try {
+      // Upsert room history
+      await supabase
+        .from("room_history")
+        .upsert({
+          user_id: user.id,
+          room_id: room.id,
+          room_code: room.code,
+          room_name: room.name,
+          video_url: room.video_url,
+          last_watched_at: new Date().toISOString(),
+          watch_duration_seconds: watchDuration,
+        }, {
+          onConflict: 'user_id,room_id',
+        });
+
+      // Update room statistics
+      await supabase
+        .from("rooms")
+        .update({
+          view_count: (room.view_count || 0) + 1,
+          total_watch_time_seconds: (room.total_watch_time_seconds || 0) + watchDuration,
+          last_activity_at: new Date().toISOString(),
+        })
+        .eq("id", room.id);
+    } catch (error) {
+      console.error("Failed to update watch history:", error);
+    }
   };
 
   const compressVideo = async (file: File): Promise<Blob> => {

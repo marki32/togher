@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Film } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 const CreateRoom = () => {
   const [roomName, setRoomName] = useState("");
@@ -13,6 +14,7 @@ const CreateRoom = () => {
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const generateRoomCode = () => {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -43,15 +45,16 @@ const CreateRoom = () => {
       return;
     }
 
-    const { data: participantData, error: participantError } = await supabase
-      .from("participants")
-      .insert({
-        room_id: roomData.id,
-        name: hostName,
-        is_host: true,
-      })
-      .select()
-      .single();
+      const { data: participantData, error: participantError } = await supabase
+        .from("participants")
+        .insert({
+          room_id: roomData.id,
+          name: hostName,
+          is_host: true,
+          user_id: user?.id || null,
+        })
+        .select()
+        .single();
 
     if (participantError) {
       toast({ title: "Failed to join room", description: participantError.message, variant: "destructive" });
