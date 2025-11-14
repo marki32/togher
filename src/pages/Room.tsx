@@ -45,17 +45,17 @@ const Room = () => {
   const [videoState, setVideoState] = useState<VideoState>({ is_playing: false, playback_time: 0 });
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [compressing, setCompressing] = useState(false);
-  const [compressionProgress, setCompressionProgress] = useState(0);
-  const [enableCompression, setEnableCompression] = useState(true);
   const [uploadSpeed, setUploadSpeed] = useState<string>('');
   const [uploadETA, setUploadETA] = useState<string>('');
   const [onlineParticipants, setOnlineParticipants] = useState<Set<string>>(new Set());
+  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [roomClosed, setRoomClosed] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const uploadStartTime = useRef<number>(0);
   const uploadedBytes = useRef<number>(0);
   const watchStartTime = useRef<number>(Date.now());
   const historyUpdateInterval = useRef<NodeJS.Timeout | null>(null);
+  const roomCloseTimeout = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!code) return;
@@ -81,6 +81,9 @@ const Room = () => {
     return () => {
       if (historyUpdateInterval.current) {
         clearInterval(historyUpdateInterval.current);
+      }
+      if (roomCloseTimeout.current) {
+        clearTimeout(roomCloseTimeout.current);
       }
       // Final update on unmount
       if (user) {
@@ -141,9 +144,16 @@ const Room = () => {
         if (payload.eventType === "UPDATE") {
           setRoom(payload.new as Room);
         } else if (payload.eventType === "DELETE") {
-          toast({ title: "Room closed", description: "The host has closed the room" });
-          localStorage.removeItem(`participant_${code}`);
-          navigate("/");
+          setRoomClosed(true);
+          setStatusMessage("Room closed by host");
+          if (roomCloseTimeout.current) {
+            clearTimeout(roomCloseTimeout.current);
+          }
+          roomCloseTimeout.current = setTimeout(() => {
+            toast({ title: "Room closed", description: "The host has closed the room" });
+            localStorage.removeItem(`participant_${code}`);
+            navigate("/");
+          }, 2000);
         }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "participants" }, (payload) => {
@@ -256,142 +266,44 @@ const Room = () => {
     }
   };
 
-  const compressVideo = async (file: File): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-      const videoElement = document.createElement('video');
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      videoElement.preload = 'metadata';
-      videoElement.src = URL.createObjectURL(file);
-      
-      videoElement.onloadedmetadata = () => {
-        // Set canvas to video dimensions (could be scaled down further)
-        canvas.width = videoElement.videoWidth;
-        canvas.height = videoElement.videoHeight;
-        
-        const stream = canvas.captureStream();
-        const mediaRecorder = new MediaRecorder(stream, {
-          mimeType: 'video/webm;codecs=vp8',
-          videoBitsPerSecond: 1000000, // 1 Mbps - adjust for quality vs size
-        });
-        
-        const chunks: Blob[] = [];
-        mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          setCompressing(false);
-          setCompressionProgress(0);
-          URL.revokeObjectURL(videoElement.src);
-          resolve(blob);
-        };
-        mediaRecorder.onerror = reject;
-        
-        mediaRecorder.start();
-        videoElement.play();
-        
-        const drawFrame = () => {
-          if (videoElement.paused || videoElement.ended) {
-            mediaRecorder.stop();
-            return;
-          }
-          ctx?.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-          const progress = Math.min(99, Math.round((videoElement.currentTime / videoElement.duration) * 100));
-          setCompressionProgress(progress);
-          requestAnimationFrame(drawFrame);
-        };
-        
-        drawFrame();
-      };
-      
-      videoElement.onerror = reject;
-    });
-  };
-
-  // Use Supabase storage client for large files - it handles resumable uploads internally
-  // This avoids 524 timeout errors by using Supabase's built-in large file handling
-  const uploadFileWithSupabaseClient = async (file: File, fileName: string): Promise<void> => {
-    // Simulate progress since Supabase client doesn't provide it directly
-    // We'll update progress based on time elapsed (approximate)
-    const startTime = Date.now();
-    const fileSize = file.size;
-    
-    // Update progress periodically
-    const progressInterval = setInterval(() => {
-      const elapsed = (Date.now() - startTime) / 1000;
-      // Estimate progress based on average upload speed (conservative estimate)
-      // Assume 10 MB/s average - this is just for UI feedback
-      const estimatedUploaded = Math.min(fileSize * 0.9, (elapsed * 10 * 1024 * 1024));
-      const percent = Math.min(95, Math.round((estimatedUploaded / fileSize) * 100));
-      setUploadProgress(percent);
-      
-      if (elapsed > 0) {
-        const speed = estimatedUploaded / elapsed;
-        const remaining = fileSize - estimatedUploaded;
-        const eta = remaining / speed;
-        setUploadSpeed(formatBytes(speed) + '/s (estimated)');
-        setUploadETA(formatTime(eta));
-      }
-    }, 500);
-
-    try {
-      const { data, error } = await supabase.storage
-        .from('videos')
-        .upload(fileName, file, {
-          cacheControl: '3600',
-          upsert: true,
-          contentType: file.type || 'video/mp4',
-        });
-
-      clearInterval(progressInterval);
-
-      if (error) {
-        throw error;
-      }
-
-      if (data) {
-        setUploadProgress(100);
-        const elapsed = (Date.now() - startTime) / 1000;
-        const speed = fileSize / elapsed;
-        setUploadSpeed(formatBytes(speed) + '/s');
-        setUploadETA('0s');
-      }
-    } catch (error) {
-      clearInterval(progressInterval);
-      throw error;
-    }
-  };
-
-  // Optimized XHR upload for smaller files (under 500MB to avoid timeout)
-  const uploadFileWithXHR = async (file: File, fileName: string): Promise<void> => {
+  // Fast direct upload - optimized for maximum speed
+  // Uses XHR with proper configuration for best performance
+  const uploadFileFast = async (file: File, fileName: string): Promise<void> => {
     const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
     const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
     
-    // Use direct storage hostname for better performance
+    // Use direct storage hostname for better performance (bypasses API gateway)
     let storageUrl = SUPABASE_URL;
     if (storageUrl.includes('.supabase.co')) {
       storageUrl = storageUrl.replace('.supabase.co', '.storage.supabase.co');
     }
     const uploadUrl = `${storageUrl}/storage/v1/object/videos/${encodeURIComponent(fileName)}`;
 
+    uploadStartTime.current = Date.now();
+    uploadedBytes.current = 0;
+
     return new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
+      
+      // Use POST method with upsert for faster uploads
       xhr.open('POST', uploadUrl, true);
+      
+      // Set headers for optimal performance
       xhr.setRequestHeader('Authorization', `Bearer ${SUPABASE_PUBLISHABLE_KEY}`);
       xhr.setRequestHeader('apikey', SUPABASE_PUBLISHABLE_KEY);
       xhr.setRequestHeader('x-upsert', 'true');
       xhr.setRequestHeader('cache-control', '3600');
       xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
       
-      // Set a longer timeout for large files (but this won't help with Cloudflare's 100s limit)
-      xhr.timeout = 300000; // 5 minutes (though Cloudflare will timeout at 100s)
+      // Extended timeout for large files
+      xhr.timeout = 1800000; // 30 minutes for very large files
       
+      // Track upload progress in real-time
       xhr.upload.onprogress = (evt) => {
         if (evt.lengthComputable) {
           const percent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
           setUploadProgress(percent);
           
-          // Calculate speed and ETA
           uploadedBytes.current = evt.loaded;
           const elapsed = (Date.now() - uploadStartTime.current) / 1000;
           if (elapsed > 0) {
@@ -405,20 +317,22 @@ const Room = () => {
         }
       };
       
-      xhr.ontimeout = () => reject(new Error('Upload timeout - file too large. Try chunked upload'));
-      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.ontimeout = () => reject(new Error('Upload timeout - please check your connection'));
+      xhr.onerror = () => reject(new Error('Upload failed - please try again'));
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           setUploadProgress(100);
           resolve();
         } else {
-          reject(new Error(`Upload error: ${xhr.status}`));
+          reject(new Error(`Upload error: ${xhr.status} - ${xhr.statusText}`));
         }
       };
       
+      // Send file directly - browser handles optimization
       xhr.send(file);
     });
   };
+
 
   // Helper functions
   const formatBytes = (bytes: number): string => {
@@ -435,52 +349,27 @@ const Room = () => {
     return `${Math.round(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
   };
 
+  useEffect(() => {
+    if (roomClosed) return;
+    if (!participant || participant.is_host || !room?.video_url) {
+      setStatusMessage("");
+      return;
+    }
+    setStatusMessage(videoState.is_playing ? "" : "Paused by host");
+  }, [videoState.is_playing, participant, room?.video_url, roomClosed]);
+
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !room || !participant?.is_host) return;
 
     const fileSizeMB = file.size / (1024 * 1024);
-    const LARGE_FILE_THRESHOLD = 100; // 100MB - disable compression for files larger than this
-    const CHUNKED_UPLOAD_THRESHOLD = 500; // Use Supabase client for files > 500MB to avoid 524 timeout
 
     try {
-      let fileToUpload: File = file;
-      let fileName = `${room.id}_${Date.now()}`;
-      
-      // Auto-disable compression for large files (it's too slow)
-      const shouldCompress = enableCompression && fileSizeMB < LARGE_FILE_THRESHOLD;
-      
-      if (shouldCompress) {
-        setCompressing(true);
-        setCompressionProgress(0);
-        toast({ 
-          title: 'Compressing video...', 
-          description: `File size: ${fileSizeMB.toFixed(1)}MB - This may take a moment` 
-        });
-        const compressedBlob = await compressVideo(file);
-        fileName += '.webm';
-        
-        // Create a new File object from the compressed blob
-        fileToUpload = new File([compressedBlob], fileName, { type: 'video/webm' });
-        
-        toast({ 
-          title: 'Compression complete!', 
-          description: `Reduced from ${fileSizeMB.toFixed(1)}MB to ${(compressedBlob.size / 1024 / 1024).toFixed(1)}MB` 
-        });
-      } else {
-        if (fileSizeMB >= LARGE_FILE_THRESHOLD && enableCompression) {
-          toast({ 
-            title: 'Large file detected', 
-            description: `Compression disabled for files > ${LARGE_FILE_THRESHOLD}MB to speed up upload` 
-          });
-        }
-        const fileExt = file.name.split('.').pop();
-        fileName += `.${fileExt}`;
-        fileToUpload = file;
-      }
+      // Skip compression entirely for faster uploads - compression is too slow
+      // Users can compress videos before uploading if needed
+      const fileExt = file.name.split('.').pop() || 'mp4';
+      const fileName = `${room.id}_${Date.now()}.${fileExt}`;
 
-      setCompressing(false);
-      setCompressionProgress(0);
       setUploading(true);
       setUploadProgress(0);
       setUploadSpeed('');
@@ -488,24 +377,13 @@ const Room = () => {
       uploadStartTime.current = Date.now();
       uploadedBytes.current = 0;
 
-      const uploadFileSizeMB = fileToUpload.size / (1024 * 1024);
-      
       toast({ 
-        title: 'Starting upload...', 
-        description: `File size: ${uploadFileSizeMB.toFixed(1)}MB - ${uploadFileSizeMB >= CHUNKED_UPLOAD_THRESHOLD ? 'Using optimized upload to avoid timeout' : 'Uploading directly'}` 
+        title: 'Starting fast upload...', 
+        description: `File size: ${fileSizeMB.toFixed(1)}MB - Optimized for maximum speed` 
       });
 
-      // Use Supabase storage client for large files to avoid 524 timeout errors
-      // Cloudflare has a 100-second timeout, so files > 500MB should use Supabase client
-      // which handles resumable uploads internally
-      if (uploadFileSizeMB >= CHUNKED_UPLOAD_THRESHOLD) {
-        // For very large files, use Supabase's storage client
-        // It handles large files better and avoids timeout issues
-        await uploadFileWithSupabaseClient(fileToUpload, fileName);
-      } else {
-        // For smaller files, use direct XHR upload with progress tracking
-        await uploadFileWithXHR(fileToUpload, fileName);
-      }
+      // Use optimized direct upload for all files - fastest method
+      await uploadFileFast(file, fileName);
 
       // Get public URL and update room
       const { data } = supabase.storage.from('videos').getPublicUrl(fileName);
@@ -523,12 +401,10 @@ const Room = () => {
       const uploadTime = ((Date.now() - uploadStartTime.current) / 1000).toFixed(1);
       toast({ 
         title: 'Video uploaded successfully!', 
-        description: `Uploaded in ${uploadTime}s` 
+        description: `Uploaded ${fileSizeMB.toFixed(1)}MB in ${uploadTime}s` 
       });
     } catch (error) {
       console.error('Upload error:', error);
-      setCompressing(false);
-      setCompressionProgress(0);
       setUploading(false);
       setUploadProgress(0);
       setUploadSpeed('');
@@ -651,6 +527,20 @@ const Room = () => {
                   <p className="text-muted-foreground">No video uploaded yet</p>
                 </div>
               )}
+              {statusMessage && (
+                <div
+                  className={`absolute top-4 left-4 z-10 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${
+                    roomClosed ? "bg-destructive/90 text-destructive-foreground" : "bg-background/80 text-foreground"
+                  }`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      roomClosed ? "bg-destructive-foreground" : "bg-primary"
+                    }`}
+                  />
+                  {statusMessage}
+                </div>
+              )}
             </div>
 
             {participant.is_host && (
@@ -672,10 +562,10 @@ const Room = () => {
                   
                   <div className="relative">
                     <label>
-                      <Button asChild disabled={uploading || compressing}>
+                      <Button asChild disabled={uploading}>
                         <span>
                           <Upload className="w-4 h-4 mr-2" />
-                          {compressing ? `Compressing... ${compressionProgress}%` : uploading ? `Uploading... ${uploadProgress}%` : "Upload Video"}
+                          {uploading ? `Uploading... ${uploadProgress}%` : "Upload Video"}
                         </span>
                       </Button>
                       <input
@@ -685,15 +575,15 @@ const Room = () => {
                         onChange={handleVideoUpload}
                       />
                     </label>
-                    {(uploading || compressing) && (
+                    {uploading && (
                       <div className="mt-2 space-y-1">
                         <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                           <div 
                             className="h-full bg-gradient-hero transition-all duration-300"
-                            style={{ width: `${compressing ? compressionProgress : uploadProgress}%` }}
+                            style={{ width: `${uploadProgress}%` }}
                           />
                         </div>
-                        {uploading && uploadSpeed && (
+                        {uploadSpeed && (
                           <div className="flex justify-between text-xs text-muted-foreground">
                             <span>{uploadSpeed}</span>
                             {uploadETA && <span>ETA: {uploadETA}</span>}
@@ -717,21 +607,6 @@ const Room = () => {
                     )}
                   </Button>
                 </div>
-                
-                <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={enableCompression}
-                    onChange={(e) => setEnableCompression(e.target.checked)}
-                    className="w-4 h-4 rounded border-border"
-                  />
-                  <span>
-                    Compress video before upload (auto-disabled for files &gt; 100MB)
-                    <span className="block text-xs mt-1 opacity-75">
-                      Large files (3-5GB) will use optimized chunked upload for maximum speed
-                    </span>
-                  </span>
-                </label>
               </div>
             )}
           </div>

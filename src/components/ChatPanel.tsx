@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Send, Smile } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface Message {
   id: string;
@@ -11,7 +12,9 @@ interface Message {
   created_at: string;
   participants: {
     name: string;
+    is_host: boolean;
   };
+  participant_id: string;
 }
 
 interface ChatPanelProps {
@@ -58,7 +61,7 @@ export const ChatPanel = ({ roomId, participantId, participantName }: ChatPanelP
       .from("messages")
       .select(`
         *,
-        participants (name)
+        participants (name, is_host)
       `)
       .eq("room_id", roomId)
       .order("created_at", { ascending: true });
@@ -93,11 +96,31 @@ export const ChatPanel = ({ roomId, participantId, participantName }: ChatPanelP
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-3">
           {messages.map((msg) => (
-            <div key={msg.id} className="animate-fade-in">
-              <div className="text-xs text-muted-foreground mb-1">
-                {msg.participants.name}
+            <div
+              key={msg.id}
+              className={cn(
+                "flex flex-col gap-1 animate-fade-in",
+                msg.participant_id === participantId ? "items-end" : "items-start"
+              )}
+            >
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">
+                  {msg.participant_id === participantId ? "You" : msg.participants.name}
+                </span>
+                {msg.participants.is_host && (
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-primary">
+                    Host
+                  </span>
+                )}
               </div>
-              <div className="bg-secondary rounded-lg p-2 text-sm">
+              <div
+                className={cn(
+                  "max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm",
+                  msg.participant_id === participantId
+                    ? "bg-gradient-hero text-primary-foreground rounded-br-sm"
+                    : "bg-secondary text-secondary-foreground rounded-bl-sm"
+                )}
+              >
                 {msg.message}
               </div>
             </div>
